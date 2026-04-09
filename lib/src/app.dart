@@ -1,15 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:dynamic_color/dynamic_color.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'features/auth/login_screen.dart';
+import 'features/home/home_screen.dart';
+import '../core/config_service.dart';
 
 import '../../main.dart';
 
-class ReTSMApp extends StatelessWidget {
+class ReTSMApp extends ConsumerWidget {
   const ReTSMApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return DynamicColorBuilder(
       builder: (ColorScheme? lightDynamic, ColorScheme? darkDynamic) {
         ColorScheme lightColorScheme;
@@ -32,6 +35,10 @@ class ReTSMApp extends StatelessWidget {
           );
         }
 
+        final config = ref.read(initialConfigProvider);
+        final hasConfig = (config['query_user']?.toString() ?? '').isNotEmpty ||
+            (config['api_key']?.toString() ?? '').isNotEmpty;
+
         return MaterialApp(
           navigatorKey: globalNavigatorKey,
           title: 'ReTSM Dashboard',
@@ -48,7 +55,7 @@ class ReTSMApp extends StatelessWidget {
             fontFamilyFallback: const ['Noto Sans SC'],
           ),
           themeMode: ThemeMode.system,
-          home: const LoginScreen(),
+          home: hasConfig ? const HomeScreen() : const LoginScreen(),
         );
       },
     );
