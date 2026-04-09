@@ -130,9 +130,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   // Remote Apps Form
                   _buildFormCard(
                     theme: theme,
-                    title: isZh
-                        ? 'Remote Apps (本地/局域网)'
-                        : 'Remote Apps (WebSocket)',
+                    title: 'Remote Apps (WebSocket)',
                     children: [
                       TextField(
                         controller: _tsIpController,
@@ -190,7 +188,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                   // ServerQuery Form
                   _buildFormCard(
                     theme: theme,
-                    title: isZh ? 'ServerQuery (TCP 远程)' : 'ServerQuery (TCP)',
+                    title: 'ServerQuery (TCP)',
                     children: [
                       TextField(
                         controller: _queryIpController,
@@ -210,8 +208,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       TextField(
                         controller: _queryUserController,
                         decoration: InputDecoration(
-                            labelText:
-                                isZh ? '用户名 (默认 serveradmin)' : 'Username',
+                            labelText: isZh ? '用户名' : 'Username',
                             border: const OutlineInputBorder()),
                       ),
                       const SizedBox(height: 12),
