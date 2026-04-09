@@ -35,3 +35,8 @@ Future<String> querySendCommand({required String command}) =>
 
 Future<void> queryDisconnect() =>
     RustLib.instance.api.crateApiQueryDisconnect();
+
+Future<void> toggleRustDebugLog(
+        {required bool enabled, required String path}) =>
+    RustLib.instance.api
+        .crateApiToggleRustDebugLog(enabled: enabled, path: path);

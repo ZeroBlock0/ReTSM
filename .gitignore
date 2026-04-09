@@ -1,66 +1,96 @@
-# Miscellaneous
-*.class
-*.log
-*.pyc
-*.swp
+# ==============================================================================
+# OS & Editors
+# ==============================================================================
 .DS_Store
-.atom/
-.build/
-.buildlog/
+.swp
 .history
 .svn/
-.swiftpm/
-migrate_working_dir/
 
-# IntelliJ related
+# IntelliJ / Android Studio
+.idea/
 *.iml
 *.ipr
 *.iws
-.idea/
 
-# The .vscode folder contains launch configuration and tasks you configure in
-# VS Code which you may wish to be included in version control, so this line
-# is commented out by default.
+# Visual Studio Code
 #.vscode/
 
-# Flutter/Dart/Pub related
-**/doc/api/
-**/ios/Flutter/.last_build_id
+# Atom
+.atom/
+
+# ==============================================================================
+# Flutter / Dart
+# ==============================================================================
 .dart_tool/
+.flutter-plugins
 .flutter-plugins-dependencies
 .pub-cache/
 .pub/
 /build/
 /coverage/
+**/doc/api/
 
-# Symbolication related
+# Symbolication & Obfuscation
 app.*.symbols
-
-# Obfuscation related
 app.*.map.json
 
-# Android Studio will place build artifacts here
+# ==============================================================================
+# Native Platforms (Android, iOS, Desktop)
+# ==============================================================================
+# Android
 /android/app/debug
 /android/app/profile
 /android/app/release
 
-# Local configuration and executables
-config.json
-ReTSM-Portable.exe
+# iOS / macOS
+**/ios/Flutter/.last_build_id
+/macos/Flutter/ephemeral/
+/macos/Flutter/GeneratedPluginRegistrant.swift
+.swiftpm/
 
-# Rust / Cargo artifacts
+# Windows
+/windows/flutter/ephemeral/
+/windows/flutter/generated_plugins.cmake
+
+# Linux
+/linux/flutter/ephemeral/
+/linux/flutter/generated_plugins.cmake
+
+# ==============================================================================
+# Rust / Cargo
+# ==============================================================================
 /rust/target/
 /rust_builder/target/
 **/*.rs.bk
 
-# Enigma Virtual Box Temp Files
+# ==============================================================================
+# Project Specific & Local
+# ==============================================================================
+# Local Config & Executables
+config.json
+ReTSM-Portable.exe
+
+# Enigma Virtual Box
 build_dynamic.evb
 
-# Windows Flutter specific
-/windows/flutter/ephemeral/
+# Temporary Files
+*.class
+*.log
+*.pyc
+.build/
+.buildlog/
 
-# Temporary files
+# Text files (Ignore all except specific ones)
 *.txt
 !CMakeLists.txt
 !assets/fonts/**/*.txt
+
+# ==============================================================================
+# Agents & AI Tooling
+# ==============================================================================
+.opencode/
+.specify/
+specs/
 AGENTS.md
+migrate_working_dir/
+

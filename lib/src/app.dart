@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:dynamic_color/dynamic_color.dart';
 
-import 'features/home/home_screen.dart';
+import 'features/auth/login_screen.dart';
 
 import '../../main.dart';
 
@@ -48,7 +48,7 @@ class ReTSMApp extends StatelessWidget {
             fontFamilyFallback: const ['Noto Sans SC'],
           ),
           themeMode: ThemeMode.system,
-          home: const HomeScreen(),
+          home: const LoginScreen(),
         );
       },
     );

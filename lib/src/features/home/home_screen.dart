@@ -8,8 +8,6 @@ import 'chat_view.dart';
 import 'server_admin_view.dart';
 import 'settings_view.dart';
 
-import '../../widgets/rotate_scale_icon.dart';
-
 class HomeScreen extends ConsumerStatefulWidget {
   const HomeScreen({super.key});
 
@@ -118,47 +116,23 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             labelType: NavigationRailLabelType.all,
             destinations: [
               NavigationRailDestination(
-                icon: RotateScaleIcon(
-                  isSelected: _selectedIndex == 0,
-                  child: const Icon(Icons.list_alt_outlined),
-                ),
-                selectedIcon: RotateScaleIcon(
-                  isSelected: _selectedIndex == 0,
-                  child: const Icon(Icons.list_alt),
-                ),
+                icon: const Icon(Icons.list_alt_outlined),
+                selectedIcon: const Icon(Icons.list_alt),
                 label: Text(isZh ? '日志' : 'Log'),
               ),
               NavigationRailDestination(
-                icon: RotateScaleIcon(
-                  isSelected: _selectedIndex == 1,
-                  child: const Icon(Icons.chat_bubble_outline),
-                ),
-                selectedIcon: RotateScaleIcon(
-                  isSelected: _selectedIndex == 1,
-                  child: const Icon(Icons.chat_bubble),
-                ),
+                icon: const Icon(Icons.chat_bubble_outline),
+                selectedIcon: const Icon(Icons.chat_bubble),
                 label: Text(isZh ? '聊天' : 'Chat'),
               ),
               NavigationRailDestination(
-                icon: RotateScaleIcon(
-                  isSelected: _selectedIndex == 2,
-                  child: const Icon(Icons.admin_panel_settings_outlined),
-                ),
-                selectedIcon: RotateScaleIcon(
-                  isSelected: _selectedIndex == 2,
-                  child: const Icon(Icons.admin_panel_settings),
-                ),
+                icon: const Icon(Icons.admin_panel_settings_outlined),
+                selectedIcon: const Icon(Icons.admin_panel_settings),
                 label: Text(isZh ? '服务器管理' : 'Admin'),
               ),
               NavigationRailDestination(
-                icon: RotateScaleIcon(
-                  isSelected: _selectedIndex == 3,
-                  child: const Icon(Icons.settings_outlined),
-                ),
-                selectedIcon: RotateScaleIcon(
-                  isSelected: _selectedIndex == 3,
-                  child: const Icon(Icons.settings),
-                ),
+                icon: const Icon(Icons.settings_outlined),
+                selectedIcon: const Icon(Icons.settings),
                 label: Text(isZh ? '设置' : 'Settings'),
               ),
             ],

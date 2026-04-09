@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../../core/config_service.dart';
 import '../../../core/ui_utils.dart';
-import '../../rust/api.dart';
+import '../../common_widgets/auth_button.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'dashboard_view.dart';
 import 'server_admin_view.dart';
@@ -24,7 +24,6 @@ class SettingsViewState extends ConsumerState<SettingsView> {
 
   Map<String, dynamic> _originalConf = {};
   String _language = 'zh';
-  bool _isRequestingAuth = false;
   bool _autoConnectRemote = false;
   bool _autoConnectQuery = false;
 
@@ -148,37 +147,8 @@ class SettingsViewState extends ConsumerState<SettingsView> {
     _showToast(newLang == 'zh' ? '配置已保存！' : 'Config saved successfully!');
   }
 
-  Future<void> _requestAuth() async {
-    setState(() => _isRequestingAuth = true);
-    try {
-      final ip = _remoteIpController.text.trim().isEmpty
-          ? '127.0.0.1'
-          : _remoteIpController.text.trim();
-      final port = int.tryParse(_portController.text) ?? 5899;
-
-      _showToast(_language == 'zh'
-          ? '请在 TeamSpeak 客户端内点击“允许” (Allow)。'
-          : 'Please click "Allow" inside the TeamSpeak client.');
-
-      final key = await requestTsApiKey(ip: ip, port: port);
-      setState(() {
-        _apiKeyController.text = key;
-      });
-      await _save();
-    } catch (e) {
-      if (!mounted) return;
-      _showToast(_language == 'zh' ? '授权失败: $e' : 'Auth failed: $e',
-          isError: true);
-    } finally {
-      if (mounted) {
-        setState(() => _isRequestingAuth = false);
-      }
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
-    final hasKey = _apiKeyController.text.trim().isNotEmpty;
     final isZh = _language == 'zh';
     final isRemoteConnected = ref.watch(remoteAppActualConnectionProvider);
     final isQueryConnected = ref.watch(serverAdminProvider).isConnected;
@@ -313,23 +283,12 @@ class SettingsViewState extends ConsumerState<SettingsView> {
                                   ),
                                 ),
                                 const SizedBox(width: 8),
-                                FilledButton.icon(
-                                  onPressed: (hasKey || _isRequestingAuth)
-                                      ? null
-                                      : _requestAuth,
-                                  icon: _isRequestingAuth
-                                      ? const SizedBox(
-                                          width: 16,
-                                          height: 16,
-                                          child: CircularProgressIndicator(
-                                              strokeWidth: 2))
-                                      : const Icon(Icons.vpn_key),
-                                  label: Text(hasKey
-                                      ? (isZh ? '已授权' : 'Authorized')
-                                      : (isZh
-                                          ? '申请 TS 授权'
-                                          : 'Request TS Auth')),
-                                )
+                                AuthButton(
+                                  apiKeyController: _apiKeyController,
+                                  ipController: _remoteIpController,
+                                  portController: _portController,
+                                  onAuthSuccess: _save,
+                                ),
                               ],
                             ),
                             const SizedBox(height: 16),
