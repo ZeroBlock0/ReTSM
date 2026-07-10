@@ -1,0 +1,133 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  windows:
+    name: Build and publish Windows release
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out tagged source
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate tag and application version
+        id: version
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $semVerPattern = '^v(?<version>(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?)$'
+
+          if ($tag -notmatch $semVerPattern) {
+            throw "Tag '$tag' is not valid SemVer. Use v1.2.3 or v1.2.3-beta.1."
+          }
+          $tagVersion = $Matches['version']
+
+          $versionLine = Select-String -Path pubspec.yaml -Pattern '^version:\s*(\S+)\s*$'
+          if (-not $versionLine) {
+            throw 'No version field was found in pubspec.yaml.'
+          }
+
+          $appVersion = $versionLine.Matches[0].Groups[1].Value
+          $appSemVer = $appVersion.Split('+')[0]
+          if ($appSemVer -ne $tagVersion) {
+            throw "Tag version '$tagVersion' does not match pubspec.yaml version '$appVersion'."
+          }
+
+          git fetch origin master --no-tags
+          git merge-base --is-ancestor HEAD origin/master
+          if ($LASTEXITCODE -ne 0) {
+            throw "Release tag '$tag' must point to a commit on master."
+          }
+
+          "version=$tagVersion" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "prerelease=$($tagVersion.Contains('-').ToString().ToLowerInvariant())" |
+            Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze Flutter code
+        run: flutter analyze
+
+      - name: Run Rust tests
+        run: cargo test --manifest-path rust/Cargo.toml --locked
+
+      - name: Run Flutter tests
+        run: flutter test
+
+      - name: Build Windows application
+        run: flutter build windows --release
+
+      - name: Package release assets
+        id: package
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          $releaseDirectory = 'build/windows/x64/runner/Release'
+          if (-not (Test-Path -LiteralPath $releaseDirectory)) {
+            throw "Build output directory '$releaseDirectory' was not found."
+          }
+
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          $archive = "dist/ReTSM-Windows-x64-v$env:VERSION.zip"
+          Compress-Archive -Path "$releaseDirectory/*" -DestinationPath $archive -CompressionLevel Optimal
+
+          $archiveName = Split-Path -Leaf $archive
+          $checksum = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          $checksumFile = 'dist/SHA256SUMS.txt'
+          "$checksum  $archiveName" | Set-Content -Path $checksumFile -Encoding utf8
+
+          "archive=$archive" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "checksum=$checksumFile" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+          CHECKSUM: ${{ steps.package.outputs.checksum }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          $arguments = @(
+            'release',
+            'create',
+            $env:GITHUB_REF_NAME,
+            $env:ARCHIVE,
+            $env:CHECKSUM,
+            '--verify-tag',
+            '--generate-notes',
+            '--title',
+            "ReTSM $env:GITHUB_REF_NAME"
+          )
+
+          if ($env:PRERELEASE -eq 'true') {
+            $arguments += '--prerelease'
+          } else {
+            $arguments += '--latest'
+          }
+
+          gh @arguments
+          if ($LASTEXITCODE -ne 0) {
+            throw "GitHub Release creation failed with exit code $LASTEXITCODE."
+          }
