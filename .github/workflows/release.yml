@@ -75,38 +75,16 @@ jobs:
       - name: Run Flutter tests
         run: flutter test
 
-      - name: Build Windows application
-        run: flutter build windows --release
-
-      - name: Package release assets
-        id: package
-        shell: pwsh
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          $releaseDirectory = 'build/windows/x64/runner/Release'
-          if (-not (Test-Path -LiteralPath $releaseDirectory)) {
-            throw "Build output directory '$releaseDirectory' was not found."
-          }
-
-          New-Item -ItemType Directory -Path dist -Force | Out-Null
-          $archive = "dist/ReTSM-Windows-x64-v$env:VERSION.zip"
-          Compress-Archive -Path "$releaseDirectory/*" -DestinationPath $archive -CompressionLevel Optimal
-
-          $archiveName = Split-Path -Leaf $archive
-          $checksum = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
-          $checksumFile = 'dist/SHA256SUMS.txt'
-          "$checksum  $archiveName" | Set-Content -Path $checksumFile -Encoding utf8
-
-          "archive=$archive" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          "checksum=$checksumFile" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+      - name: Build and package Windows application
+        run: .\build.ps1
 
       - name: Publish GitHub Release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          ARCHIVE: ${{ steps.package.outputs.archive }}
-          CHECKSUM: ${{ steps.package.outputs.checksum }}
+          ARCHIVE: dist/ReTSM-Windows-x64-v${{ steps.version.outputs.version }}.zip
+          INSTALLER: dist/ReTSM-Setup-v${{ steps.version.outputs.version }}.exe
+          CHECKSUM: dist/SHA256SUMS.txt
           PRERELEASE: ${{ steps.version.outputs.prerelease }}
         run: |
           $arguments = @(
@@ -114,6 +92,7 @@ jobs:
             'create',
             $env:GITHUB_REF_NAME,
             $env:ARCHIVE,
+            $env:INSTALLER,
             $env:CHECKSUM,
             '--verify-tag',
             '--generate-notes',

@@ -68,10 +68,9 @@ app.*.map.json
 # ==============================================================================
 # Local Config & Executables
 config.json
+# Legacy local build output; new packages are written to dist/.
 ReTSM-Portable.exe
-
-# Enigma Virtual Box
-build_dynamic.evb
+/dist/
 
 # Temporary Files
 *.class

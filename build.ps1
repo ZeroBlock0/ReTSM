@@ -1,136 +1,105 @@
+param(
+    [switch]$SkipFlutterBuild
+)
+
 $ErrorActionPreference = 'Stop'
 
-Write-Host "Building Flutter app..."
-flutter build windows
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Flutter build failed with exit code $LASTEXITCODE"
+$repositoryRoot = $PSScriptRoot
+$pubspecPath = Join-Path $repositoryRoot 'pubspec.yaml'
+$pubspecContent = Get-Content -Raw -LiteralPath $pubspecPath
+$versionMatch = [regex]::Match(
+    $pubspecContent,
+    '(?m)^version:\s*(?<version>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?:\+(?<build>\d+))?\s*$'
+)
+
+if (-not $versionMatch.Success) {
+    throw 'A valid version field was not found in pubspec.yaml.'
 }
 
-$releaseDir = Resolve-Path "build\windows\x64\runner\Release" -ErrorAction SilentlyContinue
-if (-not $releaseDir) {
-    Write-Error "Build output directory not found. Flutter build may have failed."
-}
-$releaseDir = $releaseDir.ToString()
+$version = $versionMatch.Groups['version'].Value
+$releaseDirectory = Join-Path $repositoryRoot 'build\windows\x64\runner\Release'
+$executablePath = Join-Path $releaseDirectory 'ReTSM.exe'
+$distDirectory = Join-Path $repositoryRoot 'dist'
+$archivePath = Join-Path $distDirectory "ReTSM-Windows-x64-v$version.zip"
+$installerBaseName = "ReTSM-Setup-v$version"
+$installerPath = Join-Path $distDirectory "$installerBaseName.exe"
+$checksumPath = Join-Path $distDirectory 'SHA256SUMS.txt'
+$installerScript = Join-Path $repositoryRoot 'installer\re_tsm.iss'
 
-$exePath = Join-Path $releaseDir "ReTSM.exe"
-$outputExe = Join-Path (Get-Location).Path "ReTSM-Portable.exe"
-
-if (-not (Test-Path -LiteralPath $exePath)) {
-    Write-Error "Build failed, exe not found at: $exePath"
-}
-
-Write-Host "Generating EVB XML recursively..."
-
-function Get-EvbXml {
-    param([string]$Path, [int]$Indent)
-    $xml = ""
-    $items = Get-ChildItem -LiteralPath $Path
-    $pad = "".PadLeft($Indent)
-    foreach ($item in $items) {
-        if ($item.FullName -eq $exePath) { continue }
-
-        if ($item -is [System.IO.DirectoryInfo]) {
-            $xml += "$pad<File>`n"
-            $xml += "$pad  <Type>3</Type>`n"
-            $xml += "$pad  <Name>$([System.Security.SecurityElement]::Escape($item.Name))</Name>`n"
-            $xml += "$pad  <Action>0</Action>`n"
-            $xml += "$pad  <OverwriteDateTime>false</OverwriteDateTime>`n"
-            $xml += "$pad  <OverwriteAttributes>false</OverwriteAttributes>`n"
-            $xml += "$pad  <HideFromDialogs>0</HideFromDialogs>`n"
-            $xml += "$pad  <Files>`n"
-            $xml += Get-EvbXml -Path $item.FullName -Indent ($Indent + 4)
-            $xml += "$pad  </Files>`n"
-            $xml += "$pad</File>`n"
-        } else {
-            $xml += "$pad<File>`n"
-            $xml += "$pad  <Type>2</Type>`n"
-            $xml += "$pad  <Name>$([System.Security.SecurityElement]::Escape($item.Name))</Name>`n"
-            $xml += "$pad  <File>$([System.Security.SecurityElement]::Escape($item.FullName))</File>`n"
-            $xml += "$pad  <ActiveX>false</ActiveX>`n"
-            $xml += "$pad  <ActiveXInstall>false</ActiveXInstall>`n"
-            $xml += "$pad  <Action>0</Action>`n"
-            $xml += "$pad  <OverwriteDateTime>false</OverwriteDateTime>`n"
-            $xml += "$pad  <OverwriteAttributes>false</OverwriteAttributes>`n"
-            $xml += "$pad  <PassCommandLine>false</PassCommandLine>`n"
-            $xml += "$pad  <HideFromDialogs>0</HideFromDialogs>`n"
-            $xml += "$pad</File>`n"
-        }
-    }
-    return $xml
-}
-
-$evbXmlPath = Join-Path (Get-Location).Path "build_dynamic.evb"
-
+Push-Location $repositoryRoot
 try {
-    $escapedExePath = [System.Security.SecurityElement]::Escape($exePath)
-    $escapedOutputExe = [System.Security.SecurityElement]::Escape($outputExe)
-
-    $dynamicFiles = Get-EvbXml -Path $releaseDir -Indent 14
-
-    $evbTemplate = @"
-<?xml version="1.0" encoding="UTF-8"?>
-<>
-  <InputFile>$escapedExePath</InputFile>
-  <OutputFile>$escapedOutputExe</OutputFile>
-  <Files>
-    <Enabled>true</Enabled>
-    <DeleteExtractedOnExit>false</DeleteExtractedOnExit>
-    <CompressFiles>true</CompressFiles>
-    <Files>
-      <File>
-        <Type>3</Type>
-        <Name>%DEFAULT FOLDER%</Name>
-        <Action>0</Action>
-        <OverwriteDateTime>false</OverwriteDateTime>
-        <OverwriteAttributes>false</OverwriteAttributes>
-        <HideFromDialogs>0</HideFromDialogs>
-        <Files>
-$dynamicFiles
-        </Files>
-      </File>
-    </Files>
-  </Files>
-  <Registries>
-    <Enabled>false</Enabled>
-  </Registries>
-  <Packaging>
-    <Enabled>false</Enabled>
-  </Packaging>
-  <Options>
-    <ShareVirtualSystem>false</ShareVirtualSystem>
-    <MapExecutableWithTemporaryFile>true</MapExecutableWithTemporaryFile>
-    <AllowRunningOfVirtualExeFiles>true</AllowRunningOfVirtualExeFiles>
-  </Options>
-</>
-"@
-
-    Set-Content -Path $evbXmlPath -Value $evbTemplate -Encoding UTF8
-
-    Write-Host "Packing with Enigma Virtual Box..."
-
-    $evbPaths = @(
-        "C:\Program Files (x86)\Enigma Virtual Box\enigmavbconsole.exe"
-        "C:\Program Files\Enigma Virtual Box\enigmavbconsole.exe"
-    )
-    $evbConsole = $null
-    foreach ($path in $evbPaths) {
-        if (Test-Path -LiteralPath $path) {
-            $evbConsole = $path
-            break
-        }
-    }
-
-    if ($evbConsole) {
-        & $evbConsole $evbXmlPath
+    if (-not $SkipFlutterBuild) {
+        Write-Host "Building ReTSM v$version..."
+        flutter build windows --release
         if ($LASTEXITCODE -ne 0) {
-            Write-Error "Enigma Virtual Box failed with exit code $LASTEXITCODE"
+            throw "Flutter build failed with exit code $LASTEXITCODE."
         }
-        Write-Host "Done! Output: $outputExe"
-    } else {
-        Write-Error "Enigma Virtual Box console not found. Searched:`n$($evbPaths -join "`n")"
     }
+
+    if (-not (Test-Path -LiteralPath $executablePath)) {
+        throw "Build output was not found at '$executablePath'."
+    }
+
+    New-Item -ItemType Directory -Path $distDirectory -Force | Out-Null
+    foreach ($outputPath in @($archivePath, $installerPath, $checksumPath)) {
+        if (Test-Path -LiteralPath $outputPath) {
+            Remove-Item -LiteralPath $outputPath -Force
+        }
+    }
+
+    Write-Host 'Creating portable ZIP...'
+    Compress-Archive `
+        -Path (Join-Path $releaseDirectory '*') `
+        -DestinationPath $archivePath `
+        -CompressionLevel Optimal
+
+    $isccCommand = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+    $isccCandidates = @(
+        $isccCommand.Source
+        (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 7\ISCC.exe')
+        (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe')
+        (Join-Path $env:ProgramFiles 'Inno Setup 7\ISCC.exe')
+        (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 7\ISCC.exe')
+        (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe')
+        (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
+    $isccPath = $isccCandidates | Select-Object -First 1
+
+    if (-not $isccPath) {
+        throw @"
+Inno Setup 6 or 7 was not found. Install it from https://jrsoftware.org/isdl.php
+and ensure ISCC.exe is on PATH or in the default installation directory.
+"@
+    }
+
+    Write-Host 'Creating Inno Setup installer...'
+    $compilerArguments = @(
+        "/DAppVersion=$version"
+        "/DSourceDir=$releaseDirectory"
+        "/DOutputDir=$distDirectory"
+        "/DOutputBaseFilename=$installerBaseName"
+        $installerScript
+    )
+    & $isccPath @compilerArguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "Inno Setup failed with exit code $LASTEXITCODE."
+    }
+
+    if (-not (Test-Path -LiteralPath $installerPath)) {
+        throw "Installer output was not found at '$installerPath'."
+    }
+
+    $checksumLines = foreach ($outputPath in @($archivePath, $installerPath)) {
+        $fileName = Split-Path -Leaf $outputPath
+        $checksum = (Get-FileHash -Algorithm SHA256 -LiteralPath $outputPath).Hash.ToLowerInvariant()
+        "$checksum  $fileName"
+    }
+    $checksumLines | Set-Content -LiteralPath $checksumPath -Encoding utf8
+
+    Write-Host 'Build complete:'
+    Write-Host "  Portable ZIP: $archivePath"
+    Write-Host "  Installer:    $installerPath"
+    Write-Host "  Checksums:    $checksumPath"
 } finally {
-    if (Test-Path -LiteralPath $evbXmlPath) {
-        Remove-Item -LiteralPath $evbXmlPath -Force
-    }
+    Pop-Location
 }
