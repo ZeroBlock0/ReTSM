@@ -1,13 +1,22 @@
 $ErrorActionPreference = 'Stop'
+
 Write-Host "Building Flutter app..."
 flutter build windows
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Flutter build failed with exit code $LASTEXITCODE"
+}
 
-$releaseDir = Resolve-Path "build\windows\x64\runner\Release"
+$releaseDir = Resolve-Path "build\windows\x64\runner\Release" -ErrorAction SilentlyContinue
+if (-not $releaseDir) {
+    Write-Error "Build output directory not found. Flutter build may have failed."
+}
+$releaseDir = $releaseDir.ToString()
+
 $exePath = Join-Path $releaseDir "ReTSM.exe"
-$outputExe = Join-Path (Get-Location) "ReTSM-Portable.exe"
+$outputExe = Join-Path (Get-Location).Path "ReTSM-Portable.exe"
 
-if (-not (Test-Path $exePath)) {
-    Write-Error "Build failed, exe not found."
+if (-not (Test-Path -LiteralPath $exePath)) {
+    Write-Error "Build failed, exe not found at: $exePath"
 }
 
 Write-Host "Generating EVB XML recursively..."
@@ -15,12 +24,12 @@ Write-Host "Generating EVB XML recursively..."
 function Get-EvbXml {
     param([string]$Path, [int]$Indent)
     $xml = ""
-    $items = Get-ChildItem -Path $Path
+    $items = Get-ChildItem -LiteralPath $Path
     $pad = "".PadLeft($Indent)
     foreach ($item in $items) {
         if ($item.FullName -eq $exePath) { continue }
 
-        if ($item.PSIsContainer) {
+        if ($item -is [System.IO.DirectoryInfo]) {
             $xml += "$pad<File>`n"
             $xml += "$pad  <Type>3</Type>`n"
             $xml += "$pad  <Name>$([System.Security.SecurityElement]::Escape($item.Name))</Name>`n"
@@ -50,13 +59,19 @@ function Get-EvbXml {
     return $xml
 }
 
-$dynamicFiles = Get-EvbXml -Path $releaseDir -Indent 14
+$evbXmlPath = Join-Path (Get-Location).Path "build_dynamic.evb"
 
-$evbTemplate = @"
-<?xml version="1.0" encoding="windows-1251"?>
+try {
+    $escapedExePath = [System.Security.SecurityElement]::Escape($exePath)
+    $escapedOutputExe = [System.Security.SecurityElement]::Escape($outputExe)
+
+    $dynamicFiles = Get-EvbXml -Path $releaseDir -Indent 14
+
+    $evbTemplate = @"
+<?xml version="1.0" encoding="UTF-8"?>
 <>
-  <InputFile>$exePath</InputFile>
-  <OutputFile>$outputExe</OutputFile>
+  <InputFile>$escapedExePath</InputFile>
+  <OutputFile>$escapedOutputExe</OutputFile>
   <Files>
     <Enabled>true</Enabled>
     <DeleteExtractedOnExit>false</DeleteExtractedOnExit>
@@ -89,13 +104,33 @@ $dynamicFiles
 </>
 "@
 
-Set-Content -Path "build_dynamic.evb" -Value $evbTemplate -Encoding UTF8
+    Set-Content -Path $evbXmlPath -Value $evbTemplate -Encoding UTF8
 
-Write-Host "Packing with Enigma Virtual Box..."
-$evbConsole = "C:\Program Files (x86)\Enigma Virtual Box\enigmavbconsole.exe"
-if (Test-Path $evbConsole) {
-    & $evbConsole "build_dynamic.evb"
-    Write-Host "Done! Output: $outputExe"
-} else {
-    Write-Error "Enigma Virtual Box console not found at $evbConsole"
+    Write-Host "Packing with Enigma Virtual Box..."
+
+    $evbPaths = @(
+        "C:\Program Files (x86)\Enigma Virtual Box\enigmavbconsole.exe"
+        "C:\Program Files\Enigma Virtual Box\enigmavbconsole.exe"
+    )
+    $evbConsole = $null
+    foreach ($path in $evbPaths) {
+        if (Test-Path -LiteralPath $path) {
+            $evbConsole = $path
+            break
+        }
+    }
+
+    if ($evbConsole) {
+        & $evbConsole $evbXmlPath
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "Enigma Virtual Box failed with exit code $LASTEXITCODE"
+        }
+        Write-Host "Done! Output: $outputExe"
+    } else {
+        Write-Error "Enigma Virtual Box console not found. Searched:`n$($evbPaths -join "`n")"
+    }
+} finally {
+    if (Test-Path -LiteralPath $evbXmlPath) {
+        Remove-Item -LiteralPath $evbXmlPath -Force
+    }
 }

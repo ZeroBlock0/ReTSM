@@ -26,11 +26,12 @@ class UsersScreen extends ConsumerWidget {
           if (state.error != null)
             Container(
               padding: const EdgeInsets.all(8.0),
-              color: Colors.red.shade100,
+              color: Theme.of(context).colorScheme.errorContainer,
               width: double.infinity,
               child: Text(
                 'Error: ${state.error}',
-                style: const TextStyle(color: Colors.red),
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Theme.of(context).colorScheme.onErrorContainer),
               ),
             ),
           if (state.isLoading && state.users.isEmpty)

@@ -7,6 +7,11 @@ edition = "2021"
 name = "rust_lib_re_tsm"
 crate-type = ["cdylib", "staticlib"]
 
+[lints.rust]
+# flutter_rust_bridge 2.12 emits `frb_expand`, which current Rust does not
+# recognize as a declared cfg name. Keep this scoped to the dependency issue.
+unexpected_cfgs = "allow"
+
 [dependencies]
 flutter_rust_bridge = "=2.12.0"
 tokio = { version = "1", features = ["full"] }

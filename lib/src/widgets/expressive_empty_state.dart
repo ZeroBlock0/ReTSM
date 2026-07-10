@@ -132,7 +132,6 @@ class _ExpressiveEmptyStateState extends State<ExpressiveEmptyState>
               Text(
                 widget.message,
                 style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.bold,
                       color: colors.onSurface,
                     ),
               ),

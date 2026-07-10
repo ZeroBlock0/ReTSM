@@ -1,15 +1,25 @@
 import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
 import '../../rust/api.dart';
 import '../../../core/config_service.dart';
+import '../auth/connection_notifier.dart';
 import '../../widgets/expressive_empty_state.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 class LogEntry {
   final bool isCommand;
   final String text;
   final String? prettyText;
   LogEntry({required this.isCommand, required this.text, this.prettyText});
+}
+
+const int _maximumServerAdminLogs = 500;
+
+List<LogEntry> _boundedLogs(List<LogEntry> logs) {
+  if (logs.length <= _maximumServerAdminLogs) return logs;
+  return logs.sublist(logs.length - _maximumServerAdminLogs);
 }
 
 class ServerAdminState {
@@ -22,6 +32,7 @@ class ServerAdminState {
   final List<Map<String, dynamic>> visualData;
   final List<Map<String, dynamic>> cachedClients;
   final String currentQueryType;
+  final String? queryError;
 
   ServerAdminState({
     required this.logs,
@@ -33,6 +44,7 @@ class ServerAdminState {
     required this.visualData,
     required this.cachedClients,
     required this.currentQueryType,
+    this.queryError,
   });
 
   ServerAdminState copyWith({
@@ -45,9 +57,11 @@ class ServerAdminState {
     List<Map<String, dynamic>>? visualData,
     List<Map<String, dynamic>>? cachedClients,
     String? currentQueryType,
+    String? queryError,
+    bool clearQueryError = false,
   }) {
     return ServerAdminState(
-      logs: logs ?? this.logs,
+      logs: _boundedLogs(logs ?? this.logs),
       isConnected: isConnected ?? this.isConnected,
       isVisualMode: isVisualMode ?? this.isVisualMode,
       isPrettyPrint: isPrettyPrint ?? this.isPrettyPrint,
@@ -56,6 +70,7 @@ class ServerAdminState {
       visualData: visualData ?? this.visualData,
       cachedClients: cachedClients ?? this.cachedClients,
       currentQueryType: currentQueryType ?? this.currentQueryType,
+      queryError: clearQueryError ? null : queryError ?? this.queryError,
     );
   }
 }
@@ -63,10 +78,18 @@ class ServerAdminState {
 class ServerAdminNotifier extends Notifier<ServerAdminState> {
   @override
   ServerAdminState build() {
+    final connection = ref.watch(connectionProvider);
     Future.microtask(_initFromConfig);
+    ref.listen<ConnectionStatus>(connectionProvider, (previous, next) {
+      state = state.copyWith(
+        isConnected: next.queryState == AppConnectionState.connected,
+        queryError: next.queryError,
+        clearQueryError: next.queryError == null,
+      );
+    });
     return ServerAdminState(
       logs: [LogEntry(isCommand: false, text: 'Not connected.')],
-      isConnected: false,
+      isConnected: connection.queryState == AppConnectionState.connected,
       isVisualMode: true,
       isPrettyPrint: true,
       autoScroll: true,
@@ -74,6 +97,7 @@ class ServerAdminNotifier extends Notifier<ServerAdminState> {
       visualData: [],
       cachedClients: [],
       currentQueryType: '',
+      queryError: connection.queryError,
     );
   }
 
@@ -83,23 +107,38 @@ class ServerAdminNotifier extends Notifier<ServerAdminState> {
       autoScroll: conf['query_auto_scroll'] as bool? ?? true,
       autoClear: conf['query_auto_clear'] as bool? ?? false,
     );
-    if (conf['auto_connect_query'] == true) {
-      connect("Connecting ServerQuery...");
-    }
   }
 
   Future<void> toggleAutoScroll(bool val) async {
     state = state.copyWith(autoScroll: val);
-    final conf = await ConfigService.loadConfig();
-    conf['query_auto_scroll'] = val;
-    await ConfigService.saveConfig(conf);
+    try {
+      await ConfigService.updateConfig((config) {
+        config['query_auto_scroll'] = val;
+      });
+    } catch (error) {
+      state = state.copyWith(
+        logs: [
+          ...state.logs,
+          LogEntry(isCommand: false, text: 'Error: $error')
+        ],
+      );
+    }
   }
 
   Future<void> toggleAutoClear(bool val) async {
     state = state.copyWith(autoClear: val);
-    final conf = await ConfigService.loadConfig();
-    conf['query_auto_clear'] = val;
-    await ConfigService.saveConfig(conf);
+    try {
+      await ConfigService.updateConfig((config) {
+        config['query_auto_clear'] = val;
+      });
+    } catch (error) {
+      state = state.copyWith(
+        logs: [
+          ...state.logs,
+          LogEntry(isCommand: false, text: 'Error: $error')
+        ],
+      );
+    }
   }
 
   void setVisualMode(bool val) {
@@ -121,40 +160,27 @@ class ServerAdminNotifier extends Notifier<ServerAdminState> {
           : [...state.logs, LogEntry(isCommand: false, text: connectingText)],
       visualData: [],
       currentQueryType: '',
+      clearQueryError: true,
     );
-    final conf = await ConfigService.loadConfig();
-    final ip = conf['query_ip'] as String? ?? '127.0.0.1';
-    final port = conf['query_port'] as int? ?? 10011;
-    final user = conf['query_user'] as String? ?? '';
-    final pass = conf['query_pass'] as String? ?? '';
-
-    try {
-      final res =
-          await connectQuery(ip: ip, port: port, user: user, pass: pass);
-      state = state.copyWith(
-        logs: [...state.logs, LogEntry(isCommand: false, text: res)],
-        isConnected: true,
-      );
-    } catch (e) {
-      state = state.copyWith(
-        logs: [...state.logs, LogEntry(isCommand: false, text: 'Error: $e')],
-      );
-    }
+    await ref.read(connectionProvider.notifier).connectQueryFromConfig();
   }
 
   Future<void> disconnect(String disconnectedText) async {
-    await queryDisconnect();
+    await ref.read(connectionProvider.notifier).disconnectQuery();
     state = state.copyWith(
       isConnected: false,
       logs: [...state.logs, LogEntry(isCommand: false, text: disconnectedText)],
       visualData: [],
       currentQueryType: '',
+      clearQueryError: true,
     );
   }
 
   Future<void> sendCommand(String cmd,
       {bool isAction = false, String? refreshCmd}) async {
     if (!state.isConnected) return;
+    cmd = cmd.trim();
+    if (cmd.isEmpty) return;
 
     var newLogs =
         state.autoClear ? <LogEntry>[] : List<LogEntry>.from(state.logs);
@@ -205,6 +231,7 @@ class ServerAdminNotifier extends Notifier<ServerAdminState> {
         await sendCommand(refreshCmd);
       }
     } catch (e) {
+      await ref.read(connectionProvider.notifier).refreshQueryConnectionState();
       state = state.copyWith(
         logs: [...state.logs, LogEntry(isCommand: false, text: 'Error: $e')],
         visualData: isAction ? state.visualData : [],
@@ -393,19 +420,20 @@ class _ServerAdminViewState extends ConsumerState<ServerAdminView> {
     return ExpansionTile(
       key: PageStorageKey('client_$clid'),
       leading: const CircleAvatar(child: Icon(Icons.person)),
-      title:
-          Text(clientName, style: const TextStyle(fontWeight: FontWeight.bold)),
+      title: Text(clientName, style: Theme.of(context).textTheme.titleMedium),
       subtitle: Text(subtitleStr),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           IconButton(
-            icon: const Icon(Icons.security, color: Colors.green),
+            icon: Icon(Icons.security,
+                color: Theme.of(context).colorScheme.primary),
             tooltip: isZh ? '添加服务器组' : 'Add Server Group',
             onPressed: () => _addClientServerGroup(cldbid, isZh),
           ),
           IconButton(
-            icon: const Icon(Icons.remove_moderator, color: Colors.orange),
+            icon: Icon(Icons.remove_moderator,
+                color: Theme.of(context).colorScheme.tertiary),
             tooltip: isZh ? '移除服务器组' : 'Remove Server Group',
             onPressed: () => _removeClientServerGroup(cldbid, isZh),
           ),
@@ -415,7 +443,7 @@ class _ServerAdminViewState extends ConsumerState<ServerAdminView> {
             onPressed: () => _pokeClient(clid, isZh),
           ),
           IconButton(
-            icon: const Icon(Icons.block, color: Colors.red),
+            icon: Icon(Icons.block, color: Theme.of(context).colorScheme.error),
             tooltip: isZh ? '踢出服务器' : 'Kick from Server',
             onPressed: () => _kickClient(clid, isZh),
           ),
@@ -456,10 +484,9 @@ class _ServerAdminViewState extends ConsumerState<ServerAdminView> {
                           e.key,
                           style: Theme.of(context)
                               .textTheme
-                              .bodySmall
+                              .labelMedium
                               ?.copyWith(
                                 color: Theme.of(context).colorScheme.primary,
-                                fontWeight: FontWeight.bold,
                               ),
                         ),
                         const SizedBox(height: 4),
@@ -536,10 +563,9 @@ class _ServerAdminViewState extends ConsumerState<ServerAdminView> {
                             e.key,
                             style: Theme.of(context)
                                 .textTheme
-                                .bodySmall
+                                .labelMedium
                                 ?.copyWith(
                                   color: Theme.of(context).colorScheme.primary,
-                                  fontWeight: FontWeight.bold,
                                 ),
                           ),
                           const SizedBox(height: 4),
@@ -590,8 +616,8 @@ class _ServerAdminViewState extends ConsumerState<ServerAdminView> {
             child: ExpansionTile(
               key: PageStorageKey(itemKey),
               leading: leading,
-              title: Text(title,
-                  style: const TextStyle(fontWeight: FontWeight.bold)),
+              title:
+                  Text(title, style: Theme.of(context).textTheme.titleMedium),
               subtitle: Text(subtitle),
               children: [
                 if (clientsInChannel.isEmpty)
@@ -601,15 +627,14 @@ class _ServerAdminViewState extends ConsumerState<ServerAdminView> {
                         isZh
                             ? '该频道目前没有在线用户'
                             : 'No clients currently in this channel',
-                        style: Theme.of(context)
-                            .textTheme
-                            .bodyMedium
-                            ?.copyWith(color: Colors.grey)),
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: Theme.of(context)
+                                .colorScheme
+                                .onSurfaceVariant)),
                   )
                 else
                   ...clientsInChannel
-                      .map((client) => _buildClientItem(client, isZh))
-                      .toList(),
+                      .map((client) => _buildClientItem(client, isZh)),
               ],
             ),
           );
@@ -662,8 +687,7 @@ class _ServerAdminViewState extends ConsumerState<ServerAdminView> {
           child: ExpansionTile(
             key: PageStorageKey(itemKey),
             leading: leading,
-            title: Text(title,
-                style: const TextStyle(fontWeight: FontWeight.bold)),
+            title: Text(title, style: Theme.of(context).textTheme.titleMedium),
             subtitle: subtitle.isNotEmpty ? Text(subtitle) : null,
             trailing: trailing,
             children: [
@@ -692,11 +716,10 @@ class _ServerAdminViewState extends ConsumerState<ServerAdminView> {
                                 e.key,
                                 style: Theme.of(context)
                                     .textTheme
-                                    .bodySmall
+                                    .labelMedium
                                     ?.copyWith(
                                       color:
                                           Theme.of(context).colorScheme.primary,
-                                      fontWeight: FontWeight.bold,
                                     ),
                               ),
                               const SizedBox(height: 4),
@@ -867,10 +890,13 @@ class _ServerAdminViewState extends ConsumerState<ServerAdminView> {
                               padding: const EdgeInsets.only(bottom: 8.0),
                               child: Text(
                                 '$prefix$display',
-                                style: TextStyle(
-                                  fontFamily: 'Google Sans Code',
-                                  color: color,
-                                ),
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodyMedium
+                                    ?.copyWith(
+                                      fontFamily: 'Google Sans Code',
+                                      color: color,
+                                    ),
                               ),
                             );
                           },

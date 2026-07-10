@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 
 class UIUtils {
-  static void showGlobalSnackbar(BuildContext context, String message, {bool isError = false}) {
+  static void showGlobalSnackbar(BuildContext context, String message,
+      {bool isError = false}) {
     final overlay = Overlay.of(context);
     final overlayEntry = OverlayEntry(
       builder: (context) => Positioned(
@@ -11,14 +12,20 @@ class UIUtils {
         child: Material(
           color: Colors.transparent,
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 12.0),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 24.0, vertical: 12.0),
             decoration: BoxDecoration(
-              color: isError ? Theme.of(context).colorScheme.error : Theme.of(context).colorScheme.primary,
+              color: isError
+                  ? Theme.of(context).colorScheme.error
+                  : Theme.of(context).colorScheme.primary,
               borderRadius: BorderRadius.circular(8.0),
             ),
             child: Text(
               message,
-              style: TextStyle(color: isError ? Theme.of(context).colorScheme.onError : Theme.of(context).colorScheme.onPrimary),
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: isError
+                      ? Theme.of(context).colorScheme.onError
+                      : Theme.of(context).colorScheme.onPrimary),
             ),
           ),
         ),
@@ -30,7 +37,9 @@ class UIUtils {
     });
   }
 
-  static void showGlobalActionSnackbar(BuildContext context, String message, String actionLabel, VoidCallback onAction, {bool isError = false}) {
+  static void showGlobalActionSnackbar(BuildContext context, String message,
+      String actionLabel, VoidCallback onAction,
+      {bool isError = false}) {
     showGlobalSnackbar(context, message, isError: isError);
   }
 }

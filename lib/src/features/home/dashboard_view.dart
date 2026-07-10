@@ -1,71 +1,16 @@
 import 'dart:convert';
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../rust/api.dart'; // FRB
+
 import '../../../core/config_service.dart';
 import '../../../core/ui_utils.dart';
+import '../../rust/api.dart';
 import '../../widgets/expressive_empty_state.dart';
+import '../auth/connection_notifier.dart';
 
-class RemoteAppConnectionNotifier extends Notifier<bool> {
-  @override
-  bool build() {
-    return ref.watch(autoConnectRemoteProvider);
-  }
-
-  void set(bool val) => state = val;
-}
-
-final remoteAppConnectionProvider =
-    NotifierProvider<RemoteAppConnectionNotifier, bool>(
-        RemoteAppConnectionNotifier.new);
-
-class RemoteAppActualConnectionNotifier extends Notifier<bool> {
-  @override
-  bool build() {
-    return false;
-  }
-
-  void set(bool val) => state = val;
-}
-
-final remoteAppActualConnectionProvider =
-    NotifierProvider<RemoteAppActualConnectionNotifier, bool>(
-        RemoteAppActualConnectionNotifier.new);
-
-final tsEventsProvider = StreamProvider<String>((ref) async* {
-  final isConnected = ref.watch(remoteAppConnectionProvider);
-  if (!isConnected) {
-    yield '{"type": "info", "message": "Remote App Disconnected"}';
-    return;
-  }
-
-  final conf = await ConfigService.loadConfig();
-  final ip = conf['remote_ip'] as String? ?? '127.0.0.1';
-  final port = conf['port'] as int? ?? 5899;
-  final apiKey = conf['api_key'] as String? ?? '';
-
-  if (apiKey.isEmpty) {
-    yield '{"type": "error", "message": "No API Key configured."}';
-    return;
-  }
-
-  yield '{"type": "info", "message": "Connecting to Remote Apps at ws://$ip:$port..."}';
-  try {
-    await for (final event
-        in startTsConnection(ip: ip, port: port, apiKey: apiKey)) {
-      yield event;
-    }
-    yield '{"type": "warning", "message": "Connection to Remote Apps lost."}';
-  } catch (e) {
-    yield '{"type": "error", "message": "Remote App Error: $e"}';
-  }
-
-  if (ref.read(remoteAppConnectionProvider)) {
-    Future.microtask(
-        () => ref.read(remoteAppConnectionProvider.notifier).set(false));
-  }
-});
+export '../auth/connection_notifier.dart' show tsEventsProvider;
 
 class DashboardEvent {
   final String raw;
@@ -100,42 +45,6 @@ class DashboardNotifier extends Notifier<List<DashboardEvent>> {
       if (next is AsyncData && next.value != null) {
         final val = next.value!;
         addEvent(val);
-
-        final notifier = ref.read(remoteAppActualConnectionProvider.notifier);
-
-        final isZh = ref.read(languageProvider) == 'zh';
-        if (val.contains('"message": "Connecting to Remote Apps')) {
-          Future.microtask(() {
-            notifier.set(false);
-            UIUtils.showGlobalSnackbar(
-                isZh ? '正在连接 Remote App...' : 'Connecting to Remote App...');
-          });
-        } else if (val
-            .contains('"message": "Connection to Remote Apps lost"')) {
-          Future.microtask(() {
-            notifier.set(false);
-            UIUtils.showGlobalSnackbar(
-                isZh ? 'Remote App 连接已断开' : 'Remote App connection lost',
-                isError: true);
-          });
-        } else if (val.contains('"message": "Remote App Disconnected"')) {
-          Future.microtask(() {
-            notifier.set(false);
-            UIUtils.showGlobalSnackbar(
-                isZh ? '已断开 Remote App' : 'Remote App Disconnected');
-          });
-        } else if (val.contains('"message": "Remote App Error')) {
-          Future.microtask(() {
-            notifier.set(false);
-            UIUtils.showGlobalSnackbar(
-                isZh ? 'Remote App 连接发生错误' : 'Remote App Error occurred',
-                isError: true);
-          });
-        } else if (val.contains('"type":"auth"')) {
-          Future.microtask(() => notifier.set(true));
-        } else if (val.contains('"type": "auth"')) {
-          Future.microtask(() => notifier.set(true));
-        }
       }
     }, fireImmediately: true);
 
@@ -222,6 +131,37 @@ class _DashboardViewState extends ConsumerState<DashboardView> {
     }
   }
 
+  Future<void> _persistConfig(
+    void Function(Map<String, dynamic> config) update,
+  ) async {
+    try {
+      await ConfigService.updateConfig(update);
+    } catch (error) {
+      if (!mounted) return;
+      UIUtils.showGlobalSnackbar(
+        'Failed to save dashboard preferences: $error',
+        isError: true,
+      );
+    }
+  }
+
+  void _setEventAutoClearSeconds(String value) {
+    final seconds = int.tryParse(value.trim());
+    if (seconds == null || seconds < 0) {
+      UIUtils.showGlobalSnackbar(
+        'Clear interval must be a non-negative whole number.',
+        isError: true,
+      );
+      return;
+    }
+    ref.read(eventAutoClearSecondsProvider.notifier).set(seconds);
+    unawaited(
+      _persistConfig((config) {
+        config['event_auto_clear_seconds'] = seconds;
+      }),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     ref.listen<List<DashboardEvent>>(dashboardProvider, (previous, next) {
@@ -263,11 +203,11 @@ class _DashboardViewState extends ConsumerState<DashboardView> {
                       value: ref.watch(eventAutoScrollProvider),
                       onChanged: (val) {
                         ref.read(eventAutoScrollProvider.notifier).set(val);
-                        // Save config in background
-                        ConfigService.loadConfig().then((conf) {
-                          conf['event_auto_scroll'] = val;
-                          ConfigService.saveConfig(conf);
-                        });
+                        unawaited(
+                          _persistConfig((config) {
+                            config['event_auto_scroll'] = val;
+                          }),
+                        );
                       },
                     ),
                   ),
@@ -277,15 +217,7 @@ class _DashboardViewState extends ConsumerState<DashboardView> {
                     child: Focus(
                       onFocusChange: (focused) {
                         if (!focused) {
-                          final parsed =
-                              int.tryParse(_clearController.text) ?? 0;
-                          ref
-                              .read(eventAutoClearSecondsProvider.notifier)
-                              .set(parsed);
-                          ConfigService.loadConfig().then((conf) {
-                            conf['event_auto_clear_seconds'] = parsed;
-                            ConfigService.saveConfig(conf);
-                          });
+                          _setEventAutoClearSeconds(_clearController.text);
                         }
                       },
                       child: TextField(
@@ -299,14 +231,7 @@ class _DashboardViewState extends ConsumerState<DashboardView> {
                         keyboardType: TextInputType.number,
                         controller: _clearController,
                         onSubmitted: (val) {
-                          final parsed = int.tryParse(val) ?? 0;
-                          ref
-                              .read(eventAutoClearSecondsProvider.notifier)
-                              .set(parsed);
-                          ConfigService.loadConfig().then((conf) {
-                            conf['event_auto_clear_seconds'] = parsed;
-                            ConfigService.saveConfig(conf);
-                          });
+                          _setEventAutoClearSeconds(val);
                         },
                       ),
                     ),
@@ -347,11 +272,18 @@ class _DashboardViewState extends ConsumerState<DashboardView> {
                             ev.raw,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: isError
-                                  ? Colors.red
-                                  : (isAuth ? Colors.green : null),
-                            ),
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodyMedium
+                                ?.copyWith(
+                                  color: isError
+                                      ? Theme.of(context).colorScheme.error
+                                      : (isAuth
+                                          ? Theme.of(context)
+                                              .colorScheme
+                                              .primary
+                                          : null),
+                                ),
                           ),
                           children: [
                             Padding(
@@ -359,8 +291,10 @@ class _DashboardViewState extends ConsumerState<DashboardView> {
                               child: SelectableText(
                                 const JsonEncoder.withIndent('  ')
                                     .convert(ev.parsed ?? ev.raw),
-                                style: const TextStyle(
-                                    fontFamily: 'Google Sans Code'),
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodyMedium
+                                    ?.copyWith(fontFamily: 'Google Sans Code'),
                               ),
                             )
                           ],

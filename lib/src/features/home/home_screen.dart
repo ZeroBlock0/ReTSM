@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/config_service.dart';
 
+import '../chat/chat_notifier.dart';
 import 'dashboard_view.dart';
 import 'chat_view.dart';
 import 'server_admin_view.dart';
@@ -62,7 +63,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           TextButton(
             onPressed: () => Navigator.pop(ctx, false),
             child: Text(isZh ? '放弃' : 'Discard',
-                style: const TextStyle(color: Colors.red)),
+                style: Theme.of(ctx)
+                    .textTheme
+                    .labelLarge
+                    ?.copyWith(color: Theme.of(ctx).colorScheme.error)),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
@@ -80,7 +84,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       final result = await _showUnsavedDialog();
       if (result == null) return AppExitResponse.cancel;
       if (result == true) {
-        await settingsState.saveConfig();
+        if (!await settingsState.saveConfig()) {
+          return AppExitResponse.cancel;
+        }
       }
     }
     return AppExitResponse.exit;
@@ -103,7 +109,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                   final result = await _showUnsavedDialog();
                   if (result == null) return;
                   if (result == true) {
-                    await settingsState.saveConfig();
+                    if (!await settingsState.saveConfig()) return;
                   } else {
                     settingsState.revertConfig();
                   }

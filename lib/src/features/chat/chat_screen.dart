@@ -96,12 +96,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                     children: [
                                       Text(
                                         msg.senderName,
-                                        style: TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                          color: Theme.of(context)
-                                              .colorScheme
-                                              .primary,
-                                        ),
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .labelLarge
+                                            ?.copyWith(
+                                              color: Theme.of(context)
+                                                  .colorScheme
+                                                  .primary,
+                                            ),
                                       ),
                                       const SizedBox(width: 8),
                                       Text(

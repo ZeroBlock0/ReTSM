@@ -63,13 +63,12 @@ class _ToastWidget extends StatefulWidget {
   final void Function(_ToastWidgetState) onStateCreated;
 
   const _ToastWidget({
-    Key? key,
     required this.message,
     required this.isError,
     this.action,
     required this.onDismiss,
     required this.onStateCreated,
-  }) : super(key: key);
+  });
 
   @override
   State<_ToastWidget> createState() => _ToastWidgetState();
@@ -127,10 +126,10 @@ class _ToastWidgetState extends State<_ToastWidget>
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final bgColor = widget.isError
-        ? Colors.red.shade600
+        ? colorScheme.error
         : (colorScheme.surfaceContainerHighest);
     final textColor =
-        widget.isError ? Colors.white : (colorScheme.onSurfaceVariant);
+        widget.isError ? colorScheme.onError : (colorScheme.onSurfaceVariant);
 
     return Positioned(
       bottom: 40.0,
@@ -177,7 +176,10 @@ class _ToastWidgetState extends State<_ToastWidget>
                             child: Text(
                               widget.message,
                               textAlign: TextAlign.start,
-                              style: TextStyle(color: textColor),
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodyMedium
+                                  ?.copyWith(color: textColor),
                             ),
                           ),
                           if (widget.action != null) ...[
@@ -189,11 +191,13 @@ class _ToastWidgetState extends State<_ToastWidget>
                               },
                               child: Text(
                                 widget.action!.label,
-                                style: TextStyle(
-                                  color: widget.action!.textColor ??
-                                      colorScheme.primary,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .labelLarge
+                                    ?.copyWith(
+                                      color: widget.action!.textColor ??
+                                          colorScheme.primary,
+                                    ),
                               ),
                             ),
                           ]

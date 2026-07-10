@@ -1,63 +1,79 @@
-use anyhow::{anyhow, Result};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{anyhow, Context, Result};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, watch, Mutex};
+use tokio::time::{sleep_until, timeout, Instant};
 use tracing::{debug, info, warn};
 
-// Command request wrapper for the internal queue
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const WELCOME_TIMEOUT: Duration = Duration::from_secs(5);
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
+const QUEUE_TIMEOUT: Duration = Duration::from_secs(5);
+
 struct Request {
     command: String,
     response_sender: oneshot::Sender<Result<Vec<HashMap<String, String>>>>,
 }
 
+struct QueryConnection {
+    id: u64,
+    sender: mpsc::Sender<Request>,
+    shutdown: watch::Sender<bool>,
+}
+
 pub struct QueryClient {
-    tx: Option<mpsc::Sender<Request>>,
+    connection: Option<QueryConnection>,
 }
 
 lazy_static::lazy_static! {
-    pub static ref QUERY_CLIENT: Arc<Mutex<QueryClient>> = Arc::new(Mutex::new(QueryClient { tx: None }));
+    pub static ref QUERY_CLIENT: Arc<Mutex<QueryClient>> = Arc::new(Mutex::new(QueryClient { connection: None }));
+    static ref CONNECT_GUARD: Mutex<()> = Mutex::new(());
 }
 
-/// Unescapes a TeamSpeak 3 ServerQuery string
+static NEXT_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Unescapes a TeamSpeak 3 ServerQuery string.
 pub fn unescape(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
+    let mut chars = s.chars();
 
-    while let Some(c) = chars.next() {
-        if c == '\\' {
-            if let Some(next) = chars.next() {
-                match next {
-                    's' => result.push(' '),
-                    'p' => result.push('|'),
-                    'n' => result.push('\n'),
-                    'f' => result.push('\x0C'),
-                    'r' => result.push('\r'),
-                    't' => result.push('\t'),
-                    'v' => result.push('\x0B'),
-                    '/' => result.push('/'),
-                    '\\' => result.push('\\'),
-                    _ => {
-                        result.push('\\');
-                        result.push(next);
-                    }
-                }
-            } else {
+    while let Some(character) = chars.next() {
+        if character != '\\' {
+            result.push(character);
+            continue;
+        }
+
+        match chars.next() {
+            Some('s') => result.push(' '),
+            Some('p') => result.push('|'),
+            Some('n') => result.push('\n'),
+            Some('f') => result.push('\x0C'),
+            Some('r') => result.push('\r'),
+            Some('t') => result.push('\t'),
+            Some('v') => result.push('\x0B'),
+            Some('/') => result.push('/'),
+            Some('\\') => result.push('\\'),
+            Some(other) => {
                 result.push('\\');
+                result.push(other);
             }
-        } else {
-            result.push(c);
+            None => result.push('\\'),
         }
     }
+
     result
 }
 
-/// Escapes a string for TeamSpeak 3 ServerQuery
+/// Escapes a string for TeamSpeak 3 ServerQuery.
 pub fn escape(s: &str) -> String {
     let mut result = String::with_capacity(s.len() + s.len() / 4);
-    for c in s.chars() {
-        match c {
+    for character in s.chars() {
+        match character {
             '\\' => result.push_str(r"\\"),
             '/' => result.push_str(r"\/"),
             '|' => result.push_str(r"\p"),
@@ -67,213 +83,296 @@ pub fn escape(s: &str) -> String {
             '\x0B' => result.push_str(r"\v"),
             '\x0C' => result.push_str(r"\f"),
             ' ' => result.push_str(r"\s"),
-            _ => result.push(c),
+            _ => result.push(character),
         }
     }
     result
 }
 
-/// Parses a raw ServerQuery response into a list of HashMaps.
+/// Parses a raw ServerQuery response into a list of key/value maps.
 pub fn parse_response(raw: &str) -> Vec<HashMap<String, String>> {
-    let mut entries = Vec::new();
-    let raw = raw.trim();
-    if raw.is_empty() {
-        return entries;
-    }
-
-    for entry in raw.split('|') {
-        let mut map = HashMap::new();
-        for kv in entry.split(' ') {
-            if kv.is_empty() {
-                continue;
-            }
-            if let Some((k, v)) = kv.split_once('=') {
-                map.insert(k.to_string(), unescape(v));
-            } else {
-                map.insert(kv.to_string(), String::new());
-            }
-        }
-        entries.push(map);
-    }
-
-    // Merge first entry's values into the others as in TS3-NodeJS-Library
-    // We remove this because TS3 actually returns unique keys per item, 
-    // and merging causes massive data duplication (e.g. channel descriptions copying to all channels).
-    
-    entries
+    raw.trim()
+        .split('|')
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            entry
+                .split(' ')
+                .filter(|pair| !pair.is_empty())
+                .map(|pair| match pair.split_once('=') {
+                    Some((key, value)) => (key.to_string(), unescape(value)),
+                    None => (pair.to_string(), String::new()),
+                })
+                .collect()
+        })
+        .collect()
 }
 
 impl QueryClient {
-    pub async fn connect(ip: &str, port: u16, user: &str, pass: &str) -> Result<String> {
-        let mut client = QUERY_CLIENT.lock().await;
-        
-        // Disconnect existing if any
-        if let Some(_) = client.tx {
-            client.tx = None; 
+    pub async fn connect(
+        ip: &str,
+        query_port: u16,
+        virtual_server_port: u16,
+        user: &str,
+        pass: &str,
+    ) -> Result<String> {
+        if user.is_empty() != pass.is_empty() {
+            return Err(anyhow!(
+                "ServerQuery username and password must either both be provided or both be empty"
+            ));
         }
 
-        let addr = format!("{}:{}", ip, port);
-        info!("Connecting to ServerQuery at {}", addr);
-        
-        let stream = TcpStream::connect(&addr).await?;
-        let (read_half, mut write_half) = stream.into_split();
+        let _connect_guard = CONNECT_GUARD.lock().await;
+        Self::disconnect().await;
+
+        let address = format!("{ip}:{query_port}");
+        info!("Connecting to ServerQuery at {address}");
+        let stream = timeout(CONNECT_TIMEOUT, TcpStream::connect(&address))
+            .await
+            .context("Timed out while connecting to ServerQuery")?
+            .with_context(|| format!("Failed to connect to ServerQuery at {address}"))?;
+        let (read_half, write_half) = stream.into_split();
         let mut reader = BufReader::new(read_half);
-        
-        // Read TS3 Server Query Welcome Message
-        let mut line = String::new();
-        reader.read_line(&mut line).await?;
-        line.clear();
-        reader.read_line(&mut line).await?;
 
-        // Set up the event loop queue
-        let (tx, mut rx) = mpsc::channel::<Request>(100);
-        client.tx = Some(tx.clone());
+        for _ in 0..2 {
+            let mut line = String::new();
+            let byte_count = timeout(WELCOME_TIMEOUT, reader.read_line(&mut line))
+                .await
+                .context("Timed out while reading the ServerQuery welcome message")??;
+            if byte_count == 0 {
+                return Err(anyhow!(
+                    "ServerQuery closed before sending its welcome message"
+                ));
+            }
+        }
 
-        // Spawn background worker mimicking TS3-NodeJS-Library queueWorker
+        let (sender, receiver) = mpsc::channel::<Request>(100);
+        let (shutdown, shutdown_receiver) = watch::channel(false);
+        let connection_id = NEXT_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut client = QUERY_CLIENT.lock().await;
+            client.connection = Some(QueryConnection {
+                id: connection_id,
+                sender: sender.clone(),
+                shutdown,
+            });
+        }
+
         tokio::spawn(async move {
-            let mut active_req: Option<Request> = None;
-            let mut current_response: Vec<String> = Vec::new();
-            let mut line_buf = String::new();
-
-            loop {
-                tokio::select! {
-                    // Try to pick next request from queue if idle
-                    req_opt = rx.recv(), if active_req.is_none() => {
-                        if let Some(req) = req_opt {
-                            debug!("Queue Worker sending: {}", req.command);
-                            let cmd_str = format!("{}\n", req.command);
-                            if let Err(e) = write_half.write_all(cmd_str.as_bytes()).await {
-                                let _ = req.response_sender.send(Err(anyhow!("Socket write failed: {}", e)));
-                                break;
-                            }
-                            active_req = Some(req);
-                            current_response.clear();
-                        } else {
-                            break; // Channel closed
-                        }
-                    }
-                    // Listen for socket responses concurrently
-                    read_res = reader.read_line(&mut line_buf) => {
-                        match read_res {
-                            Ok(0) => {
-                                warn!("ServerQuery disconnected");
-                                break;
-                            }
-                            Ok(_) => {
-                                let trimmed = line_buf.trim();
-                                if trimmed.is_empty() {
-                                    line_buf.clear();
-                                    continue;
-                                }
-
-                                if trimmed.starts_with("notify") {
-                                    // Async event (e.g. notifycliententerview)
-                                    debug!("Event Received: {}", trimmed);
-                                    // TODO: Forward to a broadcast channel if Dart UI needs it
-                                } else if trimmed.starts_with("error") {
-                                    // Command completion
-                                    if let Some(req) = active_req.take() {
-                                        let error_parsed = parse_response(trimmed);
-                                        let mut is_error = false;
-                                        
-                                        if let Some(err_obj) = error_parsed.first() {
-                                            if err_obj.get("id").map(|s| s.as_str()) != Some("0") {
-                                                is_error = true;
-                                            }
-                                        }
-
-                                        if is_error {
-                                            let _ = req.response_sender.send(Err(anyhow!("Query error: {}", trimmed)));
-                                        } else {
-                                            let mut parsed_data = Vec::new();
-                                            if trimmed == "error id=0 msg=ok" && current_response.is_empty() {
-                                                let mut success = HashMap::new();
-                                                success.insert("status".to_string(), "ok".to_string());
-                                                parsed_data.push(success);
-                                            }
-
-                                            for resp_line in &current_response {
-                                                let mut parsed = parse_response(resp_line);
-                                                parsed_data.append(&mut parsed);
-                                            }
-
-                                            let _ = req.response_sender.send(Ok(parsed_data));
-                                        }
-                                    }
-                                } else {
-                                    // Data line for active command
-                                    if active_req.is_some() {
-                                        current_response.push(trimmed.to_string());
-                                    } else {
-                                        debug!("Orphaned response line: {}", trimmed);
-                                    }
-                                }
-                                line_buf.clear();
-                            }
-                            Err(e) => {
-                                warn!("Socket read error: {}", e);
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-            
-            // Clean up if connection loop breaks
-            if let Some(req) = active_req {
-                let _ = req.response_sender.send(Err(anyhow!("Connection closed while awaiting response")));
-            }
+            Self::run_worker(reader, write_half, receiver, shutdown_receiver).await;
+            Self::clear_connection(connection_id).await;
         });
 
-        // Drop the lock to allow send_command to be called for auth
-        drop(client);
-
-        if !user.is_empty() && !pass.is_empty() {
-            let auth_cmd = format!("login {} {}", escape(user), escape(pass));
-            let auth_res = Self::send_command(&auth_cmd).await;
-            if auth_res.is_err() {
-                return Err(anyhow!("Login failed: {:?}", auth_res.err().unwrap()));
+        if !user.is_empty() {
+            let login_command = format!("login {} {}", escape(user), escape(pass));
+            if let Err(error) = Self::send_command(&login_command).await {
+                Self::disconnect().await;
+                return Err(anyhow!("ServerQuery login failed: {error}"));
             }
         }
-        
-        let use_res = Self::send_command("use port=9987").await;
-        if use_res.is_err() {
-            return Err(anyhow!("Use port failed: {:?}", use_res.err().unwrap()));
+
+        if let Err(error) = Self::send_command(&format!("use port={virtual_server_port}")).await {
+            Self::disconnect().await;
+            return Err(anyhow!(
+                "Failed to select virtual server port {virtual_server_port}: {error}"
+            ));
         }
 
         Ok("Connected".to_string())
     }
 
     pub async fn send_command(command: &str) -> Result<String> {
-        let client = QUERY_CLIENT.lock().await;
-        if let Some(tx) = &client.tx {
-            let (resp_tx, resp_rx) = oneshot::channel();
-            let req = Request {
-                command: command.to_string(),
-                response_sender: resp_tx,
-            };
-            
-            tx.send(req).await.map_err(|_| anyhow!("Failed to send command to queue worker"))?;
-            drop(client); // Important: drop lock so we don't block other commands while awaiting response
-            
-            match resp_rx.await {
-                Ok(Ok(parsed_data)) => {
-                    match serde_json::to_string(&parsed_data) {
-                        Ok(json) => Ok(json),
-                        Err(e) => Err(anyhow!("Failed to serialize response: {}", e)),
-                    }
-                }
-                Ok(Err(e)) => Err(e),
-                Err(_) => Err(anyhow!("Failed to receive response from queue worker")),
-            }
-        } else {
-            Err(anyhow!("Not connected"))
+        let parsed = Self::send_command_parsed(command).await?;
+        serde_json::to_string(&parsed).context("Failed to serialize ServerQuery response")
+    }
+
+    pub async fn send_command_parsed(command: &str) -> Result<Vec<HashMap<String, String>>> {
+        let sender = {
+            let client = QUERY_CLIENT.lock().await;
+            client
+                .connection
+                .as_ref()
+                .map(|connection| connection.sender.clone())
+        }
+        .ok_or_else(|| anyhow!("Not connected to ServerQuery"))?;
+
+        let (response_sender, response_receiver) = oneshot::channel();
+        let request = Request {
+            command: command.to_string(),
+            response_sender,
+        };
+        timeout(QUEUE_TIMEOUT, sender.send(request))
+            .await
+            .context("Timed out while queuing ServerQuery command")?
+            .map_err(|_| anyhow!("ServerQuery connection is closed"))?;
+
+        timeout(COMMAND_TIMEOUT + Duration::from_secs(1), response_receiver)
+            .await
+            .context("Timed out while waiting for ServerQuery response")?
+            .map_err(|_| anyhow!("ServerQuery command worker stopped"))?
+    }
+
+    pub async fn disconnect() {
+        let connection = {
+            let mut client = QUERY_CLIENT.lock().await;
+            client.connection.take()
+        };
+        if let Some(connection) = connection {
+            let _ = connection.shutdown.send(true);
         }
     }
 
-    pub async fn disconnect() -> Result<()> {
+    pub async fn is_connected() -> bool {
+        QUERY_CLIENT.lock().await.connection.is_some()
+    }
+
+    async fn run_worker(
+        mut reader: BufReader<tokio::net::tcp::OwnedReadHalf>,
+        mut writer: tokio::net::tcp::OwnedWriteHalf,
+        mut receiver: mpsc::Receiver<Request>,
+        mut shutdown: watch::Receiver<bool>,
+    ) {
+        let mut active_request: Option<Request> = None;
+        let mut active_deadline: Option<Instant> = None;
+        let mut response_lines: Vec<String> = Vec::new();
+        let mut line_buffer = String::new();
+
+        loop {
+            let timeout_deadline =
+                active_deadline.unwrap_or_else(|| Instant::now() + Duration::from_secs(86_400));
+            tokio::select! {
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        break;
+                    }
+                }
+                _ = sleep_until(timeout_deadline), if active_request.is_some() => {
+                    if let Some(request) = active_request.take() {
+                        let _ = request.response_sender.send(Err(anyhow!("Timed out waiting for ServerQuery response")));
+                    }
+                    break;
+                }
+                request = receiver.recv(), if active_request.is_none() => {
+                    match request {
+                        Some(request) => {
+                            debug!("Sending ServerQuery command: {}", redact_command(&request.command));
+                            let command = format!("{}\n", request.command);
+                            if let Err(error) = writer.write_all(command.as_bytes()).await {
+                                let _ = request.response_sender.send(Err(anyhow!("Failed to write ServerQuery command: {error}")));
+                                break;
+                            }
+                            active_deadline = Some(Instant::now() + COMMAND_TIMEOUT);
+                            active_request = Some(request);
+                            response_lines.clear();
+                        }
+                        None => break,
+                    }
+                }
+                read_result = reader.read_line(&mut line_buffer) => {
+                    match read_result {
+                        Ok(0) => {
+                            warn!("ServerQuery disconnected");
+                            break;
+                        }
+                        Ok(_) => {
+                            let line = line_buffer.trim();
+                            if line.is_empty() {
+                                line_buffer.clear();
+                                continue;
+                            }
+                            if line.starts_with("notify") {
+                                debug!("Ignoring ServerQuery notification: {line}");
+                            } else if line.starts_with("error") {
+                                if let Some(request) = active_request.take() {
+                                    let parsed_error = parse_response(line);
+                                    let is_error = parsed_error
+                                        .first()
+                                        .and_then(|entry| entry.get("id"))
+                                        .is_some_and(|id| id != "0");
+                                    if is_error {
+                                        let _ = request.response_sender.send(Err(anyhow!("ServerQuery command failed: {line}")));
+                                    } else {
+                                        let mut parsed_response = Vec::new();
+                                        if response_lines.is_empty() {
+                                            parsed_response.push(HashMap::from([(
+                                                "status".to_string(),
+                                                "ok".to_string(),
+                                            )]));
+                                        }
+                                        for response_line in &response_lines {
+                                            parsed_response.extend(parse_response(response_line));
+                                        }
+                                        let _ = request.response_sender.send(Ok(parsed_response));
+                                    }
+                                    active_deadline = None;
+                                }
+                            } else if active_request.is_some() {
+                                response_lines.push(line.to_string());
+                            } else {
+                                debug!("Ignoring orphaned ServerQuery response");
+                            }
+                            line_buffer.clear();
+                        }
+                        Err(error) => {
+                            warn!("ServerQuery read error: {error}");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(request) = active_request {
+            let _ = request.response_sender.send(Err(anyhow!(
+                "ServerQuery connection closed while awaiting response"
+            )));
+        }
+        while let Ok(request) = receiver.try_recv() {
+            let _ = request.response_sender.send(Err(anyhow!(
+                "ServerQuery connection closed before command was sent"
+            )));
+        }
+    }
+
+    async fn clear_connection(connection_id: u64) {
         let mut client = QUERY_CLIENT.lock().await;
-        client.tx = None; // Dropping the sender will break the loop and close the socket
-        Ok(())
+        if client
+            .connection
+            .as_ref()
+            .is_some_and(|connection| connection.id == connection_id)
+        {
+            client.connection = None;
+        }
+    }
+}
+
+fn redact_command(command: &str) -> String {
+    if command.starts_with("login ") {
+        "login [REDACTED]".to_string()
+    } else {
+        command.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{escape, parse_response, redact_command, unescape};
+
+    #[test]
+    fn escapes_and_unescapes_server_query_values() {
+        let source = "name with | slash/\\\n";
+        assert_eq!(unescape(&escape(source)), source);
+    }
+
+    #[test]
+    fn parses_multiple_server_query_records() {
+        let parsed = parse_response("clid=1 client_nickname=Alice|clid=2 client_nickname=Bob");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0]["client_nickname"], "Alice");
+        assert_eq!(parsed[1]["clid"], "2");
+    }
+
+    #[test]
+    fn redacts_login_commands() {
+        assert_eq!(redact_command("login admin secret"), "login [REDACTED]");
     }
 }

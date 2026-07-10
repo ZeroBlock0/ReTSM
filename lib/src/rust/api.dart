@@ -6,10 +6,9 @@
 import 'frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
-Future<String> greet() => RustLib.instance.api.crateApiGreet();
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `fmt`
 
-Future<String> getConfigFromRust() =>
-    RustLib.instance.api.crateApiGetConfigFromRust();
+Future<String> greet() => RustLib.instance.api.crateApiGreet();
 
 Stream<String> startTsConnection(
         {required String ip, required int port, required String apiKey}) =>
@@ -19,24 +18,72 @@ Stream<String> startTsConnection(
 Future<void> sendTsMessage({required String payload}) =>
     RustLib.instance.api.crateApiSendTsMessage(payload: payload);
 
+Future<void> disconnectTs() => RustLib.instance.api.crateApiDisconnectTs();
+
 Future<String> requestTsApiKey({required String ip, required int port}) =>
     RustLib.instance.api.crateApiRequestTsApiKey(ip: ip, port: port);
 
 Future<String> connectQuery(
         {required String ip,
         required int port,
+        required int virtualServerPort,
         required String user,
         required String pass}) =>
-    RustLib.instance.api
-        .crateApiConnectQuery(ip: ip, port: port, user: user, pass: pass);
+    RustLib.instance.api.crateApiConnectQuery(
+        ip: ip,
+        port: port,
+        virtualServerPort: virtualServerPort,
+        user: user,
+        pass: pass);
 
 Future<String> querySendCommand({required String command}) =>
     RustLib.instance.api.crateApiQuerySendCommand(command: command);
 
+Future<List<TsUser>> queryGetUsers() =>
+    RustLib.instance.api.crateApiQueryGetUsers();
+
 Future<void> queryDisconnect() =>
     RustLib.instance.api.crateApiQueryDisconnect();
+
+Future<bool> queryIsConnected() =>
+    RustLib.instance.api.crateApiQueryIsConnected();
 
 Future<void> toggleRustDebugLog(
         {required bool enabled, required String path}) =>
     RustLib.instance.api
         .crateApiToggleRustDebugLog(enabled: enabled, path: path);
+
+class TsUser {
+  final PlatformInt64 clientId;
+  final PlatformInt64 clientDatabaseId;
+  final String clientNickname;
+  final PlatformInt64 cid;
+  final PlatformInt64 clientType;
+
+  const TsUser({
+    required this.clientId,
+    required this.clientDatabaseId,
+    required this.clientNickname,
+    required this.cid,
+    required this.clientType,
+  });
+
+  @override
+  int get hashCode =>
+      clientId.hashCode ^
+      clientDatabaseId.hashCode ^
+      clientNickname.hashCode ^
+      cid.hashCode ^
+      clientType.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TsUser &&
+          runtimeType == other.runtimeType &&
+          clientId == other.clientId &&
+          clientDatabaseId == other.clientDatabaseId &&
+          clientNickname == other.clientNickname &&
+          cid == other.cid &&
+          clientType == other.clientType;
+}

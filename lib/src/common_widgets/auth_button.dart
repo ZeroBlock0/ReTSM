@@ -8,7 +8,7 @@ class AuthButton extends ConsumerStatefulWidget {
   final TextEditingController apiKeyController;
   final TextEditingController ipController;
   final TextEditingController portController;
-  final VoidCallback? onAuthSuccess;
+  final Future<void> Function()? onAuthSuccess;
 
   const AuthButton({
     super.key,
@@ -38,7 +38,16 @@ class _AuthButtonState extends ConsumerState<AuthButton> {
       final ip = widget.ipController.text.trim().isEmpty
           ? '127.0.0.1'
           : widget.ipController.text.trim();
-      final port = int.tryParse(widget.portController.text) ?? 5899;
+      final port = ConfigService.parsePort(widget.portController.text);
+      if (port == null) {
+        _showToast(
+          isZh
+              ? '端口必须是 1 到 65535 之间的整数。'
+              : 'Port must be a whole number between 1 and 65535.',
+          isError: true,
+        );
+        return;
+      }
 
       _showToast(isZh
           ? '请在 TeamSpeak 客户端内点击“允许” (Allow)。'
@@ -48,7 +57,7 @@ class _AuthButtonState extends ConsumerState<AuthButton> {
       widget.apiKeyController.text = key;
 
       if (widget.onAuthSuccess != null) {
-        widget.onAuthSuccess!();
+        await widget.onAuthSuccess!();
       }
     } catch (e) {
       if (!mounted) return;

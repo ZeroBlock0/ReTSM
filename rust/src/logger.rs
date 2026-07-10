@@ -3,7 +3,6 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use tracing::{Event, Subscriber};
-use tracing_subscriber::fmt::format::Writer;
 use tracing_subscriber::registry::LookupSpan;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, Layer};
 
@@ -32,7 +31,10 @@ pub fn init_logger() {
 }
 
 pub fn toggle_debug_log(enabled: bool, path: String) {
-    let mut file_opt = DEBUG_FILE.lock().unwrap();
+    let Ok(mut file_opt) = DEBUG_FILE.lock() else {
+        tracing::error!("Debug log mutex is unavailable");
+        return;
+    };
     if enabled {
         if file_opt.is_none() {
             if let Ok(file) = OpenOptions::new().create(true).append(true).open(&path) {

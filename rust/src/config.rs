@@ -9,6 +9,7 @@ pub struct AppConfig {
     pub api_key: String,
     pub port: u16,
     pub query_port: u16,
+    pub query_server_port: u16,
 }
 
 impl Default for AppConfig {
@@ -17,6 +18,7 @@ impl Default for AppConfig {
             api_key: String::new(),
             port: 5899,
             query_port: 10011,
+            query_server_port: 9987,
         }
     }
 }

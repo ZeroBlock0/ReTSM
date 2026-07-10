@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:re_tsm/core/config_service.dart';
+import 'package:re_tsm/core/ui_utils.dart';
 import 'package:re_tsm/src/features/auth/connection_notifier.dart';
 import 'package:re_tsm/src/features/home/home_screen.dart';
 import '../../common_widgets/auth_button.dart';
@@ -19,6 +20,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   final _queryIpController = TextEditingController();
   final _queryPortController = TextEditingController();
+  final _queryServerPortController = TextEditingController();
   final _queryUserController = TextEditingController();
   final _queryPassController = TextEditingController();
 
@@ -33,6 +35,8 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
       _queryIpController.text = config['query_ip']?.toString() ?? '127.0.0.1';
       _queryPortController.text = config['query_port']?.toString() ?? '10011';
+      _queryServerPortController.text =
+          config['query_server_port']?.toString() ?? '9987';
       _queryUserController.text = config['query_user']?.toString() ?? '';
       _queryPassController.text = config['query_pass']?.toString() ?? '';
     });
@@ -45,40 +49,65 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
     _tsApiKeyController.dispose();
     _queryIpController.dispose();
     _queryPortController.dispose();
+    _queryServerPortController.dispose();
     _queryUserController.dispose();
     _queryPassController.dispose();
     super.dispose();
   }
 
-  Future<void> _saveConfig() async {
-    final conf = await ConfigService.loadConfig();
-    conf['query_ip'] = _queryIpController.text;
-    conf['query_port'] = int.tryParse(_queryPortController.text) ?? 10011;
-    conf['query_user'] = _queryUserController.text;
-    conf['query_pass'] = _queryPassController.text;
+  Future<bool> _saveConfig() async {
+    final remotePort = ConfigService.parsePort(_tsPortController.text);
+    final queryPort = ConfigService.parsePort(_queryPortController.text);
+    final queryServerPort =
+        ConfigService.parsePort(_queryServerPortController.text);
+    if (remotePort == null || queryPort == null || queryServerPort == null) {
+      UIUtils.showGlobalSnackbar(
+        'Ports must be whole numbers between 1 and 65535.',
+        isError: true,
+      );
+      return false;
+    }
 
-    conf['remote_ip'] = _tsIpController.text;
-    conf['port'] = int.tryParse(_tsPortController.text) ?? 5899;
-    conf['api_key'] = _tsApiKeyController.text;
-
-    await ConfigService.saveConfig(conf);
+    try {
+      await ConfigService.updateConfig((conf) {
+        conf['query_ip'] = _queryIpController.text.trim();
+        conf['query_port'] = queryPort;
+        conf['query_server_port'] = queryServerPort;
+        conf['query_user'] = _queryUserController.text;
+        conf['query_pass'] = _queryPassController.text;
+        conf['remote_ip'] = _tsIpController.text.trim();
+        conf['port'] = remotePort;
+        conf['api_key'] = _tsApiKeyController.text;
+      });
+      return true;
+    } catch (error) {
+      UIUtils.showGlobalSnackbar(
+        'Failed to save configuration: $error',
+        isError: true,
+      );
+      return false;
+    }
   }
 
   Future<void> _connectTs() async {
-    await _saveConfig();
+    if (!await _saveConfig()) return;
     final ip = _tsIpController.text;
-    final port = int.tryParse(_tsPortController.text) ?? 5899;
+    final port = ConfigService.parsePort(_tsPortController.text)!;
     final apiKey = _tsApiKeyController.text;
     ref.read(connectionProvider.notifier).connectTs(ip, port, apiKey);
   }
 
   Future<void> _connectQuery() async {
-    await _saveConfig();
+    if (!await _saveConfig()) return;
     final ip = _queryIpController.text;
-    final port = int.tryParse(_queryPortController.text) ?? 10011;
+    final port = ConfigService.parsePort(_queryPortController.text)!;
+    final virtualServerPort =
+        ConfigService.parsePort(_queryServerPortController.text)!;
     final user = _queryUserController.text;
     final pass = _queryPassController.text;
-    ref.read(connectionProvider.notifier).connectQuery(ip, port, user, pass);
+    ref
+        .read(connectionProvider.notifier)
+        .connectQuery(ip, port, virtualServerPort, user, pass);
   }
 
   Widget _buildFormCard({
@@ -164,7 +193,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                             apiKeyController: _tsApiKeyController,
                             ipController: _tsIpController,
                             portController: _tsPortController,
-                            onAuthSuccess: _saveConfig,
+                            onAuthSuccess: () async {
+                              await _saveConfig();
+                            },
                           ),
                         ],
                       ),
@@ -173,16 +204,44 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         onPressed: connectionState.tsState ==
                                 AppConnectionState.connecting
                             ? null
-                            : _connectTs,
+                            : connectionState.tsState ==
+                                    AppConnectionState.connected
+                                ? () => ref
+                                    .read(connectionProvider.notifier)
+                                    .disconnectTs()
+                                : _connectTs,
                         child: connectionState.tsState ==
                                 AppConnectionState.connecting
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2))
-                            : Text(isZh ? '保存并测试' : 'Save & Test'),
+                            ? Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(isZh ? '连接中' : 'Connecting'),
+                                  const SizedBox(width: 8),
+                                  const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  ),
+                                ],
+                              )
+                            : Text(connectionState.tsState ==
+                                    AppConnectionState.connected
+                                ? (isZh ? '断开' : 'Disconnect')
+                                : (isZh ? '连接' : 'Connect')),
                       ),
+                      if (connectionState.tsError != null) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          isZh
+                              ? '连接失败: ${connectionState.tsError}'
+                              : 'Connection failed: ${connectionState.tsError}',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: theme.colorScheme.error,
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                   // ServerQuery Form
@@ -206,6 +265,15 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                       ),
                       const SizedBox(height: 12),
                       TextField(
+                        controller: _queryServerPortController,
+                        decoration: InputDecoration(
+                          labelText: isZh ? '虚拟服务器端口' : 'Virtual Server Port',
+                          border: const OutlineInputBorder(),
+                        ),
+                        keyboardType: TextInputType.number,
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
                         controller: _queryUserController,
                         decoration: InputDecoration(
                             labelText: isZh ? '用户名' : 'Username',
@@ -224,16 +292,44 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                         onPressed: connectionState.queryState ==
                                 AppConnectionState.connecting
                             ? null
-                            : _connectQuery,
+                            : connectionState.queryState ==
+                                    AppConnectionState.connected
+                                ? () => ref
+                                    .read(connectionProvider.notifier)
+                                    .disconnectQuery()
+                                : _connectQuery,
                         child: connectionState.queryState ==
                                 AppConnectionState.connecting
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2))
-                            : Text(isZh ? '保存并测试' : 'Save & Test'),
+                            ? Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(isZh ? '连接中' : 'Connecting'),
+                                  const SizedBox(width: 8),
+                                  const SizedBox(
+                                    width: 16,
+                                    height: 16,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  ),
+                                ],
+                              )
+                            : Text(connectionState.queryState ==
+                                    AppConnectionState.connected
+                                ? (isZh ? '断开' : 'Disconnect')
+                                : (isZh ? '连接' : 'Connect')),
                       ),
+                      if (connectionState.queryError != null) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          isZh
+                              ? '连接失败: ${connectionState.queryError}'
+                              : 'Connection failed: ${connectionState.queryError}',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: theme.colorScheme.error,
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ],
@@ -256,7 +352,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
                 style: ElevatedButton.styleFrom(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 32, vertical: 16),
-                  textStyle: const TextStyle(fontSize: 18),
+                  textStyle: theme.textTheme.titleMedium,
                 ),
               ),
             ],
