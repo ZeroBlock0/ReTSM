@@ -18,6 +18,39 @@
 # Atom
 .atom/
 
+# Visual Studio Code (local workspace settings may contain machine paths)
+.vscode/
+
+# ==============================================================================
+# Secrets, Credentials & Signing Material
+# ==============================================================================
+.env
+.env.*
+!.env.example
+credentials.json
+secrets.json
+.npmrc
+.actrc
+sentry.properties
+.cargo/credentials
+.cargo/credentials.toml
+
+# Private keys and code-signing stores
+*.key
+*.pem
+*.p8
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.snk
+*.mobileprovision
+*.provisionprofile
+
+# Platform-specific local signing configuration
+/android/key.properties
+/android/keystore.properties
+
 # ==============================================================================
 # Flutter / Dart
 # ==============================================================================
